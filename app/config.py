@@ -6,10 +6,14 @@ from typing import Optional
 
 
 class Settings(BaseSettings):
-    # RSSHub / Twitter
-    rsshub_base_url: str = "https://rsshub.app"
+    # Twitter API v2
+    twitter_bearer_token: Optional[str] = None  # Bearer Token，只读公开推文
     tibo_username: str = "thsottiaux"
+    tibo_user_id: str = "1267893715938840576"  # @thsottiaux 的 user_id，避免每次查询
     poll_interval_min: int = 10
+
+    # RSSHub（fallback，现在基本不可用）
+    rsshub_base_url: str = "https://rsshub.app"
 
     # 数据库 - Render 免费版使用 /tmp（无持久卷时）
     store_path: str = "/tmp/codex_app.db"
