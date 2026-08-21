@@ -219,11 +219,30 @@ def index(request: Request):
     if stats.get("latest_reset"):
         latest_dt = datetime.fromisoformat(stats["latest_reset"].rstrip("Z"))
         days_since = round((datetime.utcnow() - latest_dt).total_seconds() / 86400, 1)
+    history = store.get_reset_history(limit=50)
+    # 计算每次重置距今天数，添加人类友好时间
+    now = datetime.utcnow()
+    for item in history:
+        dt = datetime.fromisoformat(item["detected_at"].rstrip("Z"))
+        delta = now - dt
+        d = delta.days
+        if d == 0:
+            item["time_ago"] = "今天"
+        elif d == 1:
+            item["time_ago"] = "昨天"
+        elif d < 30:
+            item["time_ago"] = f"{d} 天前"
+        elif d < 365:
+            item["time_ago"] = f"{d // 30} 个月前"
+        else:
+            item["time_ago"] = f"{d // 365} 年前"
+        item["date_str"] = dt.strftime("%Y-%m-%d %H:%M")
     return templates.TemplateResponse("index.html", {
         "request": request,
         "stats": stats,
         "days_since": days_since,
         "sms_enabled": bool(settings.sms_provider),
+        "history": history,
     })
 
 
