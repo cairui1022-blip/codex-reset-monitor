@@ -3,6 +3,7 @@
 """
 import logging
 import os
+import subprocess
 import sys
 
 import uvicorn
@@ -18,45 +19,51 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def _log_chromium_state():
-    """启动时打印 Playwright 浏览器目录状态，便于诊断。"""
-    pw_path = os.environ.get(
-        "PLAYWRIGHT_BROWSERS_PATH",
-        "/opt/render/project/src/.playwright-browsers"
-    )
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
-    logger.info("PLAYWRIGHT_BROWSERS_PATH = %s", pw_path)
-    if os.path.isdir(pw_path):
-        try:
-            contents = os.listdir(pw_path)
-            logger.info("Browser dir contents: %s", contents)
-            # Walk first 2 levels to find executable
-            for entry in contents:
-                sub = os.path.join(pw_path, entry)
-                if os.path.isdir(sub):
-                    try:
-                        sub_contents = os.listdir(sub)
-                        logger.info("  %s/ -> %s", entry, sub_contents)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning("Cannot list browser dir: %s", e)
-    else:
-        logger.warning("Browser dir does NOT exist: %s", pw_path)
-        # Fallback: check default playwright cache
-        import subprocess
-        try:
-            r = subprocess.run(
-                ["playwright", "install", "--dry-run", "chromium"],
-                capture_output=True, text=True, timeout=10,
-                env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": pw_path},
-            )
-            logger.info("dry-run stdout: %s", r.stdout[:500])
-            logger.info("dry-run stderr: %s", r.stderr[:500])
-        except Exception as ex:
-            logger.warning("dry-run failed: %s", ex)
 
-_log_chromium_state()
+def _ensure_chromium():
+    """
+    确保 Playwright Chromium 可用。
+    
+    Render.com 的 build 容器和 run 容器是完全独立的文件系统，
+    因此 playwright install 必须在 **运行时** 执行，安装到 /tmp（运行时可写目录）。
+    
+    /tmp 在同一容器实例的生命周期内持久化，重启后重新安装（通常 <3 min）。
+    """
+    # 使用 /tmp 作为 Playwright browsers 路径（运行时可写，build 容器隔离不影响）
+    pw_path = "/tmp/pw-browsers"
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    logger.info("PLAYWRIGHT_BROWSERS_PATH set to %s", pw_path)
+
+    # 检查是否已安装
+    needs_install = True
+    if os.path.isdir(pw_path):
+        chromium_dirs = [d for d in os.listdir(pw_path) if d.startswith("chromium")]
+        if chromium_dirs:
+            needs_install = False
+            logger.info("Chromium already installed: %s", chromium_dirs)
+
+    if needs_install:
+        logger.info("Installing Playwright Chromium to %s ...", pw_path)
+        os.makedirs(pw_path, exist_ok=True)
+        try:
+            result = subprocess.run(
+                ["playwright", "install", "chromium", "--with-deps"],
+                env={**os.environ, "PLAYWRIGHT_BROWSERS_PATH": pw_path},
+                timeout=300,
+                check=False,
+            )
+            if result.returncode == 0:
+                contents = os.listdir(pw_path)
+                logger.info("Chromium installed. Directory: %s", contents)
+            else:
+                logger.error("playwright install returned code %s", result.returncode)
+        except Exception as e:
+            logger.error("Failed to install Chromium: %s", e)
+    else:
+        logger.info("Chromium already available, skipping install.")
+
+
+_ensure_chromium()
 
 from app.api import app
 from app.config import settings

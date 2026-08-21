@@ -61,7 +61,7 @@ def _find_chromium_executable() -> str | None:
 
     pw_path = os.environ.get(
         "PLAYWRIGHT_BROWSERS_PATH",
-        "/opt/render/project/src/.playwright-browsers"
+        "/tmp/pw-browsers"
     )
     if not os.path.isdir(pw_path):
         return None
@@ -92,8 +92,9 @@ def _playwright_worker(username: str, max_results: int) -> list[dict]:
     import threading
     from playwright.sync_api import sync_playwright
 
-    # 显式设置 Playwright browser 路径，确保子进程能找到 Chromium
-    _playwright_path = "/opt/render/project/src/.playwright-browsers"
+    # 显式设置 Playwright browser 路径（与 main.py 中 _ensure_chromium 一致）
+    # Render 运行时使用 /tmp/pw-browsers（build/run 容器隔离，/tmp 是运行时可写目录）
+    _playwright_path = _os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/tmp/pw-browsers")
     _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _playwright_path
 
     # 自动发现实际 Chromium 可执行文件
