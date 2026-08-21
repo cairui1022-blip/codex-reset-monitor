@@ -263,6 +263,63 @@ def index(request: Request):
     })
 
 
+@app.get("/api/v1/debug/collector")
+def debug_collector(request: Request):
+    """诊断 Twitter API 连通性（需要 X-Admin-Secret header）"""
+    secret = request.headers.get("X-Admin-Secret", "")
+    if secret != settings.api_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    import traceback
+    result: dict = {
+        "bearer_token_set": bool(settings.twitter_bearer_token),
+        "bearer_token_prefix": settings.twitter_bearer_token[:12] + "..." if settings.twitter_bearer_token else None,
+        "tibo_user_id": settings.tibo_user_id,
+        "tibo_username": settings.tibo_username,
+        "tweepy_version": None,
+        "get_user_error": None,
+        "get_tweets_error": None,
+        "tweets_fetched": 0,
+        "sample_tweet": None,
+    }
+
+    try:
+        import tweepy
+        result["tweepy_version"] = tweepy.__version__
+    except ImportError as e:
+        result["get_user_error"] = f"tweepy not installed: {e}"
+        return result
+
+    # Step 1: resolve user
+    client = tweepy.Client(bearer_token=settings.twitter_bearer_token, wait_on_rate_limit=False)
+    user_id = settings.tibo_user_id
+    if not user_id:
+        try:
+            resp = client.get_user(username=settings.tibo_username)
+            user_id = str(resp.data.id) if resp.data else None
+        except Exception as e:
+            result["get_user_error"] = traceback.format_exc()
+            return result
+
+    # Step 2: fetch tweets
+    try:
+        resp = client.get_users_tweets(
+            id=user_id,
+            max_results=5,
+            tweet_fields=["created_at", "text", "id"],
+            exclude=["replies", "retweets"],
+        )
+        if resp.data:
+            result["tweets_fetched"] = len(resp.data)
+            result["sample_tweet"] = resp.data[0].text[:120]
+        else:
+            result["get_tweets_error"] = f"resp.data is None/empty. errors={resp.errors}"
+    except Exception as e:
+        result["get_tweets_error"] = traceback.format_exc()
+
+    return result
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
