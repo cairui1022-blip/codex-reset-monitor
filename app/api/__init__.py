@@ -263,6 +263,51 @@ def index(request: Request):
     })
 
 
+@app.get("/api/v1/debug/fs")
+def debug_fs(request: Request):
+    """诊断文件系统 - 列出 playwright-browsers 目录内容"""
+    secret = request.headers.get("X-Admin-Secret", "")
+    if secret != settings.api_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    import os, subprocess
+
+    pw_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "NOT_SET")
+    result = {
+        "PLAYWRIGHT_BROWSERS_PATH": pw_path,
+        "pw_path_exists": os.path.exists(pw_path) if pw_path != "NOT_SET" else False,
+        "pw_path_contents": [],
+        "chromium_sub": {},
+        "which_playwright": "",
+        "ls_tmp": [],
+    }
+
+    if pw_path != "NOT_SET" and os.path.exists(pw_path):
+        try:
+            result["pw_path_contents"] = os.listdir(pw_path)
+            for sub in result["pw_path_contents"]:
+                sub_path = os.path.join(pw_path, sub)
+                try:
+                    result["chromium_sub"][sub] = os.listdir(sub_path)
+                except Exception as e:
+                    result["chromium_sub"][sub] = str(e)
+        except Exception as e:
+            result["pw_path_contents"] = str(e)
+
+    try:
+        r = subprocess.run(["which", "playwright"], capture_output=True, text=True, timeout=5)
+        result["which_playwright"] = r.stdout.strip()
+    except Exception as e:
+        result["which_playwright"] = str(e)
+
+    try:
+        result["ls_tmp"] = os.listdir("/tmp")
+    except Exception as e:
+        result["ls_tmp"] = str(e)
+
+    return result
+
+
 @app.get("/api/v1/debug/collector")
 def debug_collector(request: Request):
     """诊断 Playwright 采集器连通性（需要 X-Admin-Secret header）"""
