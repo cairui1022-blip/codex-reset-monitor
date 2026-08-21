@@ -1,15 +1,20 @@
 """
-采集层 - 通过 Playwright 无头浏览器抓取 x.com/@thsottiaux 时间线
-策略：拦截浏览器发出的 GraphQL XHR 请求，提取 JSON 推文数据。
+采集层 - 直接调用 X.com GraphQL API 获取 @thsottiaux 时间线推文。
 
-重要：Playwright sync_api 不能跨线程/greenlet 使用（FastAPI 在线程池中调用）。
-解决方案：在独立子进程（ProcessPoolExecutor）中运行 Playwright，
-子进程有自己干净的 main 线程，不存在 greenlet 冲突。
+策略：使用 curl_cffi 库（TLS 指纹伪装），直接发送与浏览器一样的 HTTPS 请求，
+无需 Playwright / 无头浏览器。
+
+X.com 的 UserTweets GraphQL 端点对未登录请求返回公开推文，
+需要：
+  - gt (guest token): 通过 POST /1.1/guest/activate.json 获取
+  - bearer token: 固定公开值（浏览器 JS 中硬编码）
+  - 正确的 TLS 指纹：curl_cffi 使用 impersonate="chrome124" 实现
 """
 from __future__ import annotations
 
 import json
 import logging
+import time
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,23 +24,23 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 全局进程池（单进程，避免资源争用）
-_EXECUTOR = None
-_EXECUTOR_LOCK = __import__("threading").Lock()
+# X.com 公开 Bearer Token（浏览器 JS 中硬编码，无需登录）
+_BEARER_TOKEN = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
+    "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
 
-# x.com GraphQL 端点关键字（用于拦截响应）
-_GRAPHQL_TIMELINE_KEYWORDS = [
-    "UserTweets",
-    "UserMedia",
-    "TweetDetail",
-]
+# GraphQL endpoint
+_GRAPHQL_URL = "https://api.twitter.com/graphql/V7H0Ap3_Hh2FyS75OCDO3Q/UserTweets"
 
-# 目标用户名
+# 目标用户
 _USERNAME = settings.tibo_username
+_USER_ID = getattr(settings, "tibo_user_id", "1267893715938840576")
 
-# 请求超时（ms / s）
-_NAV_TIMEOUT = 45_000
-_WAIT_TIMEOUT = 25
+# Guest token 缓存（有效期约 3 小时）
+_guest_token: Optional[str] = None
+_guest_token_ts: float = 0.0
+_GUEST_TOKEN_TTL = 10800  # 3 hours
 
 
 @dataclass
@@ -47,215 +52,181 @@ class RawTweet:
     created_at: datetime
 
 
-# ─────────────────────────────────────────────
-# 子进程内执行的函数（必须是模块级 top-level）
-# ─────────────────────────────────────────────
+def _get_cffi_session():
+    """Create a curl_cffi session with Chrome TLS fingerprint."""
+    try:
+        from curl_cffi.requests import Session
+        session = Session(impersonate="chrome124")
+        return session
+    except ImportError:
+        logger.error("curl_cffi not installed, falling back to requests")
+        import requests
+        return requests.Session()
 
-def _find_chromium_executable() -> str | None:
-    """
-    Walk PLAYWRIGHT_BROWSERS_PATH to find the actual chromium binary.
-    Returns the path if found, else None (let Playwright use its default).
-    """
-    import os
-    import glob as _glob
 
-    pw_path = os.environ.get(
-        "PLAYWRIGHT_BROWSERS_PATH",
-        "/tmp/pw-browsers"
+def _get_guest_token(session) -> str:
+    """Get or refresh the guest token from X.com."""
+    global _guest_token, _guest_token_ts
+
+    now = time.time()
+    if _guest_token and (now - _guest_token_ts) < _GUEST_TOKEN_TTL:
+        return _guest_token
+
+    headers = {
+        "Authorization": f"Bearer {_BEARER_TOKEN}",
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://x.com",
+        "Referer": "https://x.com/",
+    }
+    resp = session.post(
+        "https://api.twitter.com/1.1/guest/activate.json",
+        headers=headers,
+        timeout=15,
     )
-    if not os.path.isdir(pw_path):
-        return None
+    resp.raise_for_status()
+    data = resp.json()
+    token = data.get("guest_token") or data.get("guest_Token")
+    if not token:
+        raise ValueError(f"No guest_token in response: {data}")
 
-    # Look for chrome / chromium / chrome-headless-shell executables
-    patterns = [
-        os.path.join(pw_path, "chromium-*", "chrome-linux", "chrome"),
-        os.path.join(pw_path, "chromium-*", "chrome-linux64", "chrome"),
-        os.path.join(pw_path, "chromium_headless_shell-*", "chrome-headless-shell-linux64", "chrome-headless-shell"),
-        os.path.join(pw_path, "chromium-*", "*", "chromium"),
-        os.path.join(pw_path, "chromium-*", "*", "chrome"),
-    ]
-    for pattern in patterns:
-        matches = _glob.glob(pattern)
-        if matches:
-            return matches[0]
-    return None
+    _guest_token = token
+    _guest_token_ts = now
+    logger.info("Refreshed guest token: %s…", token[:8])
+    return token
 
 
-def _playwright_worker(username: str, max_results: int) -> list[dict]:
+def _extract_tweets_from_response(data: dict, username: str) -> list[dict]:
+    """Recursively walk the GraphQL response and extract tweet dicts."""
+    results = []
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            if "tweet_results" in obj:
+                result = obj["tweet_results"].get("result", {})
+                if result.get("__typename") == "TweetWithVisibilityResults":
+                    result = result.get("tweet", result)
+                legacy = result.get("legacy", {})
+                tweet_id = legacy.get("id_str") or result.get("rest_id", "")
+                if not tweet_id:
+                    return
+                full_text = legacy.get("full_text", "") or legacy.get("text", "")
+                if full_text.startswith("RT @"):
+                    return
+                created_at_str = legacy.get("created_at", "")
+                try:
+                    from email.utils import parsedate_to_datetime
+                    dt = parsedate_to_datetime(created_at_str)
+                    if dt.tzinfo is not None:
+                        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    ts = dt.isoformat()
+                except Exception:
+                    ts = datetime.utcnow().isoformat()
+                results.append({
+                    "tweet_id": tweet_id,
+                    "author": username,
+                    "text": full_text,
+                    "url": f"https://x.com/{username}/status/{tweet_id}",
+                    "created_at": ts,
+                })
+            else:
+                for v in obj.values():
+                    _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(data)
+    return results
+
+
+def _fetch_via_graphql(max_results: int = 20) -> list[RawTweet]:
     """
-    在子进程中运行 Playwright。返回可序列化的 dict 列表。
-    这个函数必须是模块级别（不能是 lambda / 嵌套函数），
-    因为 ProcessPoolExecutor 需要 pickle 它。
+    Fetch tweets via X.com GraphQL API using curl_cffi (TLS fingerprint spoofing).
+    No browser needed.
     """
-    import os as _os
-    import json as _json
-    import threading
-    from playwright.sync_api import sync_playwright
+    session = _get_cffi_session()
 
-    # 显式设置 Playwright browser 路径（与 main.py 中 _ensure_chromium 一致）
-    # Render 运行时使用 /tmp/pw-browsers（build/run 容器隔离，/tmp 是运行时可写目录）
-    _playwright_path = _os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/tmp/pw-browsers")
-    _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _playwright_path
+    guest_token = _get_guest_token(session)
 
-    # 自动发现实际 Chromium 可执行文件
-    _exe = _find_chromium_executable()
+    variables = {
+        "userId": _USER_ID,
+        "count": max(max_results, 20),
+        "includePromotedContent": False,
+        "withQuickPromoteEligibilityTweetFields": True,
+        "withVoice": True,
+        "withV2Timeline": True,
+    }
+    features = {
+        "rweb_lists_timeline_redesign_enabled": True,
+        "responsive_web_graphql_exclude_directive_enabled": True,
+        "verified_phone_label_enabled": False,
+        "creator_subscriptions_tweet_preview_api_enabled": True,
+        "responsive_web_graphql_timeline_navigation_enabled": True,
+        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+        "tweetypie_unmention_optimization_enabled": True,
+        "responsive_web_edit_tweet_api_enabled": True,
+        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+        "view_counts_everywhere_api_enabled": True,
+        "longform_notetweets_consumption_enabled": True,
+        "responsive_web_twitter_article_tweet_consumption_enabled": False,
+        "tweet_awards_web_tipping_enabled": False,
+        "freedom_of_speech_not_reach_fetch_enabled": True,
+        "standardized_nudges_misinfo": True,
+        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+        "longform_notetweets_rich_text_read_enabled": True,
+        "longform_notetweets_inline_media_enabled": True,
+        "responsive_web_media_download_video_enabled": False,
+        "responsive_web_enhance_cards_enabled": False,
+    }
 
-    collected: list[dict] = []
-    hit_event = threading.Event()
+    headers = {
+        "Authorization": f"Bearer {_BEARER_TOKEN}",
+        "X-Guest-Token": guest_token,
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://x.com",
+        "Referer": f"https://x.com/{_USERNAME}",
+        "X-Twitter-Active-User": "yes",
+        "X-Twitter-Client-Language": "en",
+    }
 
-    _graphql_kws = ["UserTweets", "UserMedia", "TweetDetail"]
+    params = {
+        "variables": json.dumps(variables, separators=(",", ":")),
+        "features": json.dumps(features, separators=(",", ":")),
+    }
 
-    def _extract(data: dict) -> list[dict]:
-        results = []
-
-        def _walk(obj):
-            if isinstance(obj, dict):
-                if "tweet_results" in obj:
-                    result = obj["tweet_results"].get("result", {})
-                    if result.get("__typename") == "TweetWithVisibilityResults":
-                        result = result.get("tweet", result)
-                    legacy = result.get("legacy", {})
-                    tweet_id = legacy.get("id_str") or result.get("rest_id", "")
-                    if not tweet_id:
-                        return
-                    full_text = legacy.get("full_text", "") or legacy.get("text", "")
-                    if full_text.startswith("RT @"):
-                        return
-                    created_at_str = legacy.get("created_at", "")
-                    try:
-                        from email.utils import parsedate_to_datetime
-                        from datetime import timezone as tz
-                        dt = parsedate_to_datetime(created_at_str)
-                        if dt.tzinfo is not None:
-                            dt = dt.astimezone(tz.utc).replace(tzinfo=None)
-                        ts = dt.isoformat()
-                    except Exception:
-                        from datetime import datetime as _dt
-                        ts = _dt.utcnow().isoformat()
-                    results.append({
-                        "tweet_id": tweet_id,
-                        "author": username,
-                        "text": full_text,
-                        "url": f"https://x.com/{username}/status/{tweet_id}",
-                        "created_at": ts,
-                    })
-                else:
-                    for v in obj.values():
-                        _walk(v)
-            elif isinstance(obj, list):
-                for item in obj:
-                    _walk(item)
-
-        _walk(data)
-        return results
-
-    def _on_response(response):
-        try:
-            url = response.url
-            if not any(kw in url for kw in _graphql_kws):
-                return
-            if response.status != 200:
-                return
-            body = response.text()
-            data = _json.loads(body)
-            tweets = _extract(data)
-            if tweets:
-                collected.extend(tweets)
-                hit_event.set()
-        except Exception:
-            pass
-
-    _launch_kwargs: dict = dict(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--no-first-run",
-            "--no-zygote",
-            "--single-process",
-            "--disable-extensions",
-        ],
+    resp = session.get(
+        _GRAPHQL_URL,
+        headers=headers,
+        params=params,
+        timeout=20,
     )
-    if _exe:
-        _launch_kwargs["executable_path"] = _exe
+    resp.raise_for_status()
+    data = resp.json()
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(**_launch_kwargs)
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="en-US",
-            timezone_id="America/New_York",
-            java_script_enabled=True,
-        )
-        page = context.new_page()
-        page.on("response", _on_response)
+    raw_list = _extract_tweets_from_response(data, _USERNAME)
 
-        try:
-            page.goto(
-                f"https://x.com/{username}",
-                timeout=45_000,
-                wait_until="domcontentloaded",
-            )
-            # 等待 GraphQL 命中（最多 25 秒）
-            hit_event.wait(timeout=25)
-            if not collected:
-                # 尝试滚动触发加载
-                page.evaluate("window.scrollBy(0, 600)")
-                hit_event.wait(timeout=8)
-        except Exception:
-            pass
-        finally:
-            try:
-                page.close()
-                context.close()
-                browser.close()
-            except Exception:
-                pass
-
-    # 去重 + 排序
+    # Deduplicate + sort
     seen: set[str] = set()
     unique: list[dict] = []
-    for t in collected:
+    for t in raw_list:
         if t["tweet_id"] not in seen:
             seen.add(t["tweet_id"])
             unique.append(t)
 
     unique.sort(key=lambda x: x["created_at"], reverse=True)
-    return unique[:max_results]
-
-
-# ─────────────────────────────────────────────
-# 进程池管理
-# ─────────────────────────────────────────────
-
-def _get_executor():
-    global _EXECUTOR
-    with _EXECUTOR_LOCK:
-        if _EXECUTOR is None:
-            from concurrent.futures import ProcessPoolExecutor
-            _EXECUTOR = ProcessPoolExecutor(max_workers=1)
-    return _EXECUTOR
-
-
-# ─────────────────────────────────────────────
-# 公共接口
-# ─────────────────────────────────────────────
-
-def _fetch_via_playwright(max_results: int = 20) -> list[RawTweet]:
-    """
-    在隔离子进程中运行 Playwright，避免 greenlet/thread 冲突。
-    """
-    executor = _get_executor()
-    future = executor.submit(_playwright_worker, _USERNAME, max_results)
-    # 阻塞等待（最多 60 秒）
-    raw_list: list[dict] = future.result(timeout=60)
+    raw_list = unique[:max_results]
 
     tweets: list[RawTweet] = []
     for r in raw_list:
@@ -276,17 +247,47 @@ def _fetch_via_playwright(max_results: int = 20) -> list[RawTweet]:
 def fetch_recent_tweets(max_results: int = 20) -> list[RawTweet]:
     """
     采集 @thsottiaux 最新推文。
-    优先使用 Playwright 无头浏览器拦截 GraphQL 响应。
+    使用 curl_cffi 直接调用 X.com GraphQL API（TLS 指纹伪装）。
     失败时返回空列表。
     """
     try:
-        return _fetch_via_playwright(max_results=max_results)
+        return _fetch_via_graphql(max_results=max_results)
     except Exception as e:
-        logger.error("Playwright collector failed: %s", e, exc_info=True)
+        logger.error("curl_cffi GraphQL collector failed: %s", e, exc_info=True)
         return []
 
 
-# 保留常量供兼容（向下兼容旧代码）
+# ─────────────────────────────────────────────
+# 公共调试接口（供 debug API 端点使用）
+# ─────────────────────────────────────────────
+
+def debug_fetch(max_results: int = 5) -> dict:
+    """Return a debug dict with method, tweets, and error info."""
+    import traceback
+    start = time.time()
+    error = None
+    tweets = []
+    try:
+        raw = _fetch_via_graphql(max_results=max_results)
+        tweets = [
+            {"tweet_id": t.tweet_id, "text": t.text[:120], "created_at": t.created_at.isoformat()}
+            for t in raw
+        ]
+    except Exception as e:
+        error = traceback.format_exc()
+    elapsed = round(time.time() - start, 2)
+    return {
+        "method": "curl_cffi_graphql",
+        "tibo_username": _USERNAME,
+        "tibo_user_id": _USER_ID,
+        "elapsed_sec": elapsed,
+        "tweets_fetched": len(tweets),
+        "samples": tweets,
+        "error": error,
+    }
+
+
+# 向下兼容旧代码保留的常量
 NITTER_INSTANCES: list[str] = []
 _HEADERS: dict = {}
 _TIMEOUT: int = 30

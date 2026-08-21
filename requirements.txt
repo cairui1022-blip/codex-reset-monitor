@@ -1,7 +1,7 @@
 fastapi>=0.109.0,<0.116.0
 uvicorn[standard]>=0.27.0,<0.32.0
 requests>=2.31.0
-playwright>=1.44.0
+curl_cffi>=0.7.0
 apscheduler>=3.10.0
 sqlalchemy>=2.0.0
 python-dotenv>=1.0.0

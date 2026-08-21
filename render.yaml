@@ -2,20 +2,18 @@ services:
   - type: web
     name: codex-reset-monitor
     runtime: python
-    buildCommand: bash -c "pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.pw-browsers playwright install chromium"
+    buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     plan: free
     envVars:
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/project/src/.pw-browsers
-      - key: RSSHUB_BASE_URL
-        value: https://rsshub.app
       - key: TIBO_USERNAME
         value: thsottiaux
+      - key: TIBO_USER_ID
+        value: "1267893715938840576"
       - key: POLL_INTERVAL_MIN
         value: "10"
       - key: STORE_PATH
-        value: ./data/app.db
+        value: /tmp/codex_app.db
       - key: WEB_HOST
         value: "0.0.0.0"
       - key: WEB_PORT
@@ -28,8 +26,4 @@ services:
       # 以下环境变量在 Render 控制台手动填写
       # PUSHPLUS_TOKEN     - PushPlus 微信推送 token（群组主 token）
       # PUSHPLUS_TOPIC     - PushPlus 群组编码（可选）
-      # WECOM_WEBHOOK      - 企业微信群机器人 webhook（可选）
-      # TG_BOT_TOKEN       - Telegram Bot Token（可选）
-      # TG_CHAT_ID         - Telegram Chat ID（可选）
       # SMS_PROVIDER       - aliyun 或 tencent（可选）
-      # HTTP_PROXY         - 代理地址（部署在国内时填写）

@@ -263,133 +263,15 @@ def index(request: Request):
     })
 
 
-@app.get("/api/v1/debug/fs")
-def debug_fs(request: Request):
-    """诊断文件系统 - 列出 playwright-browsers 目录内容"""
-    secret = request.headers.get("X-Admin-Secret", "")
-    if secret != settings.api_secret:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    import os, subprocess
-
-    pw_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "NOT_SET")
-    result = {
-        "PLAYWRIGHT_BROWSERS_PATH": pw_path,
-        "pw_path_exists": os.path.exists(pw_path) if pw_path != "NOT_SET" else False,
-        "pw_path_contents": [],
-        "chromium_sub": {},
-        "which_playwright": "",
-        "ls_tmp": [],
-    }
-
-    if pw_path != "NOT_SET" and os.path.exists(pw_path):
-        try:
-            result["pw_path_contents"] = os.listdir(pw_path)
-            for sub in result["pw_path_contents"]:
-                sub_path = os.path.join(pw_path, sub)
-                try:
-                    result["chromium_sub"][sub] = os.listdir(sub_path)
-                except Exception as e:
-                    result["chromium_sub"][sub] = str(e)
-        except Exception as e:
-            result["pw_path_contents"] = str(e)
-
-    try:
-        r = subprocess.run(["which", "playwright"], capture_output=True, text=True, timeout=5)
-        result["which_playwright"] = r.stdout.strip()
-    except Exception as e:
-        result["which_playwright"] = str(e)
-
-    try:
-        result["ls_tmp"] = os.listdir("/tmp")
-    except Exception as e:
-        result["ls_tmp"] = str(e)
-
-    return result
-
-
-@app.get("/api/v1/debug/chromium")
-def debug_chromium(request: Request):
-    """深度诊断：列出 Chromium 安装目录全部内容 + 自动发现的可执行文件路径"""
-    secret = request.headers.get("X-Admin-Secret", "")
-    if secret != settings.api_secret:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    import os, glob as _glob, subprocess
-
-    pw_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "NOT_SET")
-    tree: dict = {}
-
-    def _walk(path: str, depth: int = 0) -> list:
-        if depth > 3:
-            return ["<max depth>"]
-        try:
-            entries = os.listdir(path)
-        except Exception as e:
-            return [f"<error: {e}>"]
-        result = []
-        for e in sorted(entries):
-            full = os.path.join(path, e)
-            if os.path.isdir(full):
-                result.append({e + "/": _walk(full, depth + 1)})
-            else:
-                size = os.path.getsize(full) if os.path.isfile(full) else -1
-                result.append(f"{e} ({size} bytes)")
-        return result
-
-    if pw_path != "NOT_SET" and os.path.isdir(pw_path):
-        tree = {"exists": True, "contents": _walk(pw_path)}
-    else:
-        tree = {"exists": False, "path": pw_path}
-
-    # Auto-discover executable
-    from app.collector import _find_chromium_executable
-    exe = _find_chromium_executable()
-
-    # Also check if it's executable
-    exe_ok = os.access(exe, os.X_OK) if exe else False
-
-    return {
-        "PLAYWRIGHT_BROWSERS_PATH": pw_path,
-        "tree": tree,
-        "detected_executable": exe,
-        "executable_ok": exe_ok,
-    }
-
-
 @app.get("/api/v1/debug/collector")
 def debug_collector(request: Request):
-    """诊断 Playwright 采集器连通性（需要 X-Admin-Secret header）"""
+    """诊断 curl_cffi GraphQL 采集器连通性（需要 X-Admin-Secret header）"""
     secret = request.headers.get("X-Admin-Secret", "")
     if secret != settings.api_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    import time
-
-    start = time.time()
-    tweets = []
-    error = None
-    # Call _fetch_via_playwright directly so exceptions bubble up to us
-    try:
-        from app.collector import _fetch_via_playwright
-        tweets = _fetch_via_playwright(max_results=5)
-    except Exception as e:
-        import traceback
-        error = traceback.format_exc()
-
-    elapsed = round(time.time() - start, 2)
-    samples = [
-        {"tweet_id": t.tweet_id, "created_at": t.created_at.isoformat(), "text": t.text[:120]}
-        for t in tweets[:3]
-    ]
-    return {
-        "method": "playwright_graphql_intercept",
-        "tibo_username": settings.tibo_username,
-        "elapsed_sec": elapsed,
-        "tweets_fetched": len(tweets),
-        "samples": samples,
-        "error": error,
-    }
+    from app.collector import debug_fetch
+    return debug_fetch(max_results=5)
 
 
 @app.get("/health")
