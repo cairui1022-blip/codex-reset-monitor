@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     tibo_username: str = "thsottiaux"
     poll_interval_min: int = 10
 
-    # 数据库
-    store_path: str = "./data/app.db"
+    # 数据库 - Render 免费版使用 /tmp（无持久卷时）
+    store_path: str = "/tmp/codex_app.db"
 
     # Telegram
     tg_bot_token: Optional[str] = None

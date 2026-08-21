@@ -68,7 +68,9 @@ _SessionFactory = None
 
 def init_db(db_path: str):
     global _engine, _SessionFactory
-    os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
+    db_dir = os.path.dirname(db_path)
+    if db_dir and db_dir != "/" and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
     _engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(_engine)
     _SessionFactory = sessionmaker(bind=_engine)
