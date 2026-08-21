@@ -2,7 +2,7 @@ services:
   - type: web
     name: codex-reset-monitor
     runtime: python
-    buildCommand: pip install -r requirements.txt && playwright install chromium && playwright install-deps chromium
+    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
     startCommand: python main.py
     plan: free
     envVars:

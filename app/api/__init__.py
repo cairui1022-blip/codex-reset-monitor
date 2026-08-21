@@ -271,13 +271,14 @@ def debug_collector(request: Request):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     import time
-    from app.collector import fetch_recent_tweets
 
     start = time.time()
     tweets = []
     error = None
+    # Call _fetch_via_playwright directly so exceptions bubble up to us
     try:
-        tweets = fetch_recent_tweets(max_results=5)
+        from app.collector import _fetch_via_playwright
+        tweets = _fetch_via_playwright(max_results=5)
     except Exception as e:
         import traceback
         error = traceback.format_exc()
