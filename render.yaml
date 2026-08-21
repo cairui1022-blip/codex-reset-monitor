@@ -2,7 +2,7 @@ services:
   - type: web
     name: codex-reset-monitor
     runtime: python
-    buildCommand: pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers playwright install --with-deps chromium
+    buildCommand: pip install -r requirements.txt && export PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers && playwright install --with-deps chromium && echo "Chromium installed at $PLAYWRIGHT_BROWSERS_PATH" && ls $PLAYWRIGHT_BROWSERS_PATH
     startCommand: python main.py
     plan: free
     envVars:
