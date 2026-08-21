@@ -308,6 +308,55 @@ def debug_fs(request: Request):
     return result
 
 
+@app.get("/api/v1/debug/chromium")
+def debug_chromium(request: Request):
+    """深度诊断：列出 Chromium 安装目录全部内容 + 自动发现的可执行文件路径"""
+    secret = request.headers.get("X-Admin-Secret", "")
+    if secret != settings.api_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    import os, glob as _glob, subprocess
+
+    pw_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "NOT_SET")
+    tree: dict = {}
+
+    def _walk(path: str, depth: int = 0) -> list:
+        if depth > 3:
+            return ["<max depth>"]
+        try:
+            entries = os.listdir(path)
+        except Exception as e:
+            return [f"<error: {e}>"]
+        result = []
+        for e in sorted(entries):
+            full = os.path.join(path, e)
+            if os.path.isdir(full):
+                result.append({e + "/": _walk(full, depth + 1)})
+            else:
+                size = os.path.getsize(full) if os.path.isfile(full) else -1
+                result.append(f"{e} ({size} bytes)")
+        return result
+
+    if pw_path != "NOT_SET" and os.path.isdir(pw_path):
+        tree = {"exists": True, "contents": _walk(pw_path)}
+    else:
+        tree = {"exists": False, "path": pw_path}
+
+    # Auto-discover executable
+    from app.collector import _find_chromium_executable
+    exe = _find_chromium_executable()
+
+    # Also check if it's executable
+    exe_ok = os.access(exe, os.X_OK) if exe else False
+
+    return {
+        "PLAYWRIGHT_BROWSERS_PATH": pw_path,
+        "tree": tree,
+        "detected_executable": exe,
+        "executable_ok": exe_ok,
+    }
+
+
 @app.get("/api/v1/debug/collector")
 def debug_collector(request: Request):
     """诊断 Playwright 采集器连通性（需要 X-Admin-Secret header）"""

@@ -51,6 +51,36 @@ class RawTweet:
 # 子进程内执行的函数（必须是模块级 top-level）
 # ─────────────────────────────────────────────
 
+def _find_chromium_executable() -> str | None:
+    """
+    Walk PLAYWRIGHT_BROWSERS_PATH to find the actual chromium binary.
+    Returns the path if found, else None (let Playwright use its default).
+    """
+    import os
+    import glob as _glob
+
+    pw_path = os.environ.get(
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "/opt/render/project/src/.playwright-browsers"
+    )
+    if not os.path.isdir(pw_path):
+        return None
+
+    # Look for chrome / chromium / chrome-headless-shell executables
+    patterns = [
+        os.path.join(pw_path, "chromium-*", "chrome-linux", "chrome"),
+        os.path.join(pw_path, "chromium-*", "chrome-linux64", "chrome"),
+        os.path.join(pw_path, "chromium_headless_shell-*", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+        os.path.join(pw_path, "chromium-*", "*", "chromium"),
+        os.path.join(pw_path, "chromium-*", "*", "chrome"),
+    ]
+    for pattern in patterns:
+        matches = _glob.glob(pattern)
+        if matches:
+            return matches[0]
+    return None
+
+
 def _playwright_worker(username: str, max_results: int) -> list[dict]:
     """
     在子进程中运行 Playwright。返回可序列化的 dict 列表。
@@ -63,12 +93,11 @@ def _playwright_worker(username: str, max_results: int) -> list[dict]:
     from playwright.sync_api import sync_playwright
 
     # 显式设置 Playwright browser 路径，确保子进程能找到 Chromium
-    # Render 部署时 browser 安装在 /opt/render/project/src/.playwright-browsers
     _playwright_path = "/opt/render/project/src/.playwright-browsers"
-    _os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", _playwright_path)
-    # 也覆盖写入，防止被默认值覆盖
-    if not _os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _playwright_path
+    _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _playwright_path
+
+    # 自动发现实际 Chromium 可执行文件
+    _exe = _find_chromium_executable()
 
     collected: list[dict] = []
     hit_event = threading.Event()
@@ -135,20 +164,24 @@ def _playwright_worker(username: str, max_results: int) -> list[dict]:
         except Exception:
             pass
 
+    _launch_kwargs: dict = dict(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-zygote",
+            "--single-process",
+            "--disable-extensions",
+        ],
+    )
+    if _exe:
+        _launch_kwargs["executable_path"] = _exe
+
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process",
-                "--disable-extensions",
-            ],
-        )
+        browser = pw.chromium.launch(**_launch_kwargs)
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=(
