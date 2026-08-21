@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Codex 额度重置提醒</title>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --card: #1a1a1a;
+      --border: #2a2a2a;
+      --text: #e8e8e8;
+      --muted: #888;
+      --accent: #10b981;
+      --accent2: #3b82f6;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      padding: 24px 16px 60px;
+    }
+    .container { max-width: 680px; margin: 0 auto; }
+    header { text-align: center; padding: 32px 0 24px; }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header h1 span { color: var(--accent); }
+    header p { color: var(--muted); margin-top: 8px; font-size: 0.95rem; }
+
+    /* Stats bar */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+    }
+    .stat-card .val {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1.1;
+    }
+    .stat-card .label { font-size: 0.78rem; color: var(--muted); margin-top: 4px; }
+
+    /* Status banner */
+    .status-banner {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin-bottom: 28px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .status-dot {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; } 50% { opacity: 0.4; }
+    }
+    .status-banner .info { flex: 1; }
+    .status-banner .info strong { display: block; font-size: 1rem; }
+    .status-banner .info span { font-size: 0.85rem; color: var(--muted); }
+
+    /* Subscribe tabs */
+    .section { margin-bottom: 28px; }
+    .section h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section h2::before {
+      content: '';
+      width: 4px; height: 18px;
+      background: var(--accent);
+      border-radius: 2px;
+      display: inline-block;
+    }
+
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab-btn {
+      padding: 8px 20px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.9rem;
+      transition: all .15s;
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #000;
+      font-weight: 600;
+    }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+    }
+
+    /* PushPlus QR */
+    .pushplus-layout {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    .qr-box {
+      background: #fff;
+      border-radius: 10px;
+      padding: 10px;
+      text-align: center;
+    }
+    .qr-box img { width: 140px; height: 140px; }
+    .qr-box small { display: block; color: #333; font-size: 0.72rem; margin-top: 6px; }
+    .steps { list-style: none; counter-reset: step; }
+    .steps li {
+      counter-increment: step;
+      padding: 8px 0 8px 36px;
+      position: relative;
+      font-size: 0.9rem;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+    }
+    .steps li:last-child { border-bottom: none; }
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0; top: 8px;
+      width: 22px; height: 22px;
+      background: var(--accent);
+      color: #000;
+      border-radius: 50%;
+      font-size: 0.75rem;
+      font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* Input form */
+    .input-group { margin-top: 14px; display: flex; gap: 10px; }
+    .input-group input {
+      flex: 1;
+      padding: 10px 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .input-group input:focus { border-color: var(--accent); }
+    .btn-primary {
+      padding: 10px 22px;
+      background: var(--accent);
+      color: #000;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      white-space: nowrap;
+      transition: opacity .15s;
+    }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .form-hint { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+    .alert {
+      margin-top: 14px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      display: none;
+    }
+    .alert.success { background: #052e16; border: 1px solid var(--accent); color: #6ee7b7; }
+    .alert.error { background: #1f0202; border: 1px solid var(--danger); color: #fca5a5; }
+
+    /* SMS disabled */
+    .sms-disabled {
+      text-align: center;
+      padding: 28px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .sms-disabled span { font-size: 2rem; display: block; margin-bottom: 10px; }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-top: 40px;
+    }
+    footer a { color: var(--accent2); text-decoration: none; }
+
+    @media (max-width: 480px) {
+      .pushplus-layout { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: repeat(3, 1fr); }
+      .stat-card .val { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Codex <span>额度重置</span> 提醒</h1>
+    <p>监控 Tibo（@thsottiaux）推特，第一时间推送 Codex 额度重置通知</p>
+  </header>
+
+  <!-- 统计卡片 -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="val">{{ stats.total_resets or 0 }}</div>
+      <div class="label">累计重置次数</div>
+    </div>
+    <div class="stat-card">
+      <div class="val">{{ days_since if days_since is not none else "—" }}</div>
+      <div class="label">距上次重置（天）</div>
+    </div>
+    <div class="stat-card">
+      <div class="val">{{ stats.avg_interval_days or "—" }}</div>
+      <div class="label">平均间隔（天）</div>
+    </div>
+  </div>
+
+  <!-- 状态横幅 -->
+  <div class="status-banner">
+    <div class="status-dot"></div>
+    <div class="info">
+      {% if stats.latest_reset %}
+        <strong>上次重置：{{ stats.latest_reset[:10] }}</strong>
+        <span>已监控 Tibo 推特，有新重置会立即推送</span>
+      {% else %}
+        <strong>尚无重置记录</strong>
+        <span>系统正在监控中，等待 Tibo 发布重置消息…</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- 订阅区域 -->
+  <div class="section">
+    <h2>订阅重置提醒</h2>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('wechat', this)">微信推送</button>
+      <button class="tab-btn" onclick="switchTab('sms', this)">手机短信</button>
+    </div>
+
+    <!-- 微信 Tab -->
+    <div id="tab-wechat" class="tab-pane active">
+      <div class="card">
+        <div class="pushplus-layout">
+          <div class="qr-box">
+            <img src="/api/v1/pushplus/qrcode" alt="PushPlus 登录二维码" />
+            <small>扫码获取微信 Token</small>
+          </div>
+          <div>
+            <ol class="steps">
+              <li>微信扫描左侧二维码，进入 <b>PushPlus</b> 官网</li>
+              <li>微信登录后，复制页面中的 <b>Token</b></li>
+              <li>将 Token 粘贴到下方输入框并提交</li>
+              <li>收到「订阅成功」提醒，代表配置完成 ✅</li>
+            </ol>
+            <div class="input-group">
+              <input type="text" id="pushplus-token" placeholder="粘贴你的 PushPlus Token" maxlength="64" />
+              <button class="btn-primary" onclick="subscribePushplus()">订阅</button>
+            </div>
+            <div class="form-hint">Token 仅用于向你的微信发送消息，不会存储明文日志。</div>
+            <div class="alert" id="wechat-alert"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 手机 Tab -->
+    <div id="tab-sms" class="tab-pane">
+      <div class="card">
+        {% if sms_enabled %}
+          <p style="font-size:0.9rem;color:var(--muted);margin-bottom:14px;">
+            输入手机号后，当 Codex 额度重置时将发送短信通知。
+          </p>
+          <div class="input-group">
+            <input type="tel" id="phone-input" placeholder="输入11位手机号" maxlength="11" />
+            <button class="btn-primary" onclick="subscribePhone()">订阅</button>
+          </div>
+          <div class="form-hint">仅用于发送重置提醒短信，不用于其他用途。</div>
+          <div class="alert" id="sms-alert"></div>
+        {% else %}
+          <div class="sms-disabled">
+            <span>📵</span>
+            短信推送功能暂未开启<br>
+            请使用微信推送方式订阅，或联系管理员配置短信服务。
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    由 <a href="https://x.com/thsottiaux" target="_blank">@thsottiaux</a> 的推特信号驱动 ·
+    <a href="/api/v1/status" target="_blank">API 状态</a> ·
+    最长等待：{{ stats.longest_wait_days or "—" }} 天
+  </footer>
+</div>
+
+<script>
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  function showAlert(id, type, msg) {
+    const el = document.getElementById(id);
+    el.className = 'alert ' + type;
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => { el.style.display = 'none'; }, 6000);
+  }
+
+  async function subscribePushplus() {
+    const token = document.getElementById('pushplus-token').value.trim();
+    if (!token) { showAlert('wechat-alert', 'error', '请先填写 PushPlus Token'); return; }
+    const btn = event.target;
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/v1/subscribe/pushplus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showAlert('wechat-alert', 'success', '✅ ' + data.message);
+        document.getElementById('pushplus-token').value = '';
+      } else {
+        showAlert('wechat-alert', 'error', '❌ ' + (data.detail || data.message || '订阅失败'));
+      }
+    } catch (e) {
+      showAlert('wechat-alert', 'error', '❌ 网络错误，请稍后重试');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function subscribePhone() {
+    const phone = document.getElementById('phone-input').value.trim();
+    if (!phone) { showAlert('sms-alert', 'error', '请输入手机号'); return; }
+    if (!/^1[3-9]\d{9}$/.test(phone)) { showAlert('sms-alert', 'error', '请输入有效的11位手机号'); return; }
+    const btn = event.target;
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/v1/subscribe/phone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showAlert('sms-alert', 'success', '✅ ' + data.message);
+        document.getElementById('phone-input').value = '';
+      } else {
+        showAlert('sms-alert', 'error', '❌ ' + (data.detail || data.message || '订阅失败'));
+      }
+    } catch (e) {
+      showAlert('sms-alert', 'error', '❌ 网络错误，请稍后重试');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // 回车触发
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      const activeTab = document.querySelector('.tab-pane.active').id;
+      if (activeTab === 'tab-wechat') subscribePushplus();
+      else subscribePhone();
+    }
+  });
+</script>
+</body>
+</html>

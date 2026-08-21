@@ -1,0 +1,10 @@
+data/
+logs/
+*.db
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
