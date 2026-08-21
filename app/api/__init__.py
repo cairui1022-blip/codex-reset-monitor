@@ -237,12 +237,29 @@ def index(request: Request):
         else:
             item["time_ago"] = f"{d // 365} 年前"
         item["date_str"] = dt.strftime("%Y-%m-%d %H:%M")
+
+    # 构建热力图数据：{"YYYY-MM-DD": count, "YYYY-MM-DD_s": "推文摘要"}
+    heatmap_dates: dict = {}
+    for item in history:
+        try:
+            dt = datetime.fromisoformat(item["detected_at"].rstrip("Z"))
+            date_key = dt.strftime("%Y-%m-%d")
+            heatmap_dates[date_key] = heatmap_dates.get(date_key, 0) + 1
+            # 只保留第一条推文摘要作为 tooltip
+            snippet_key = date_key + "_s"
+            if snippet_key not in heatmap_dates:
+                raw = item.get("tweet_text") or ""
+                heatmap_dates[snippet_key] = raw[:80] + ("…" if len(raw) > 80 else "")
+        except Exception:
+            pass
+
     return templates.TemplateResponse("index.html", {
         "request": request,
         "stats": stats,
         "days_since": days_since,
         "sms_enabled": bool(settings.sms_provider),
         "history": history,
+        "heatmap_dates": heatmap_dates,
     })
 
 
