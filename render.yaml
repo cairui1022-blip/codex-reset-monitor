@@ -2,10 +2,12 @@ services:
   - type: web
     name: codex-reset-monitor
     runtime: python
-    buildCommand: pip install -r requirements.txt && playwright install --with-deps chromium
+    buildCommand: pip install -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers playwright install --with-deps chromium
     startCommand: python main.py
     plan: free
     envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/src/.playwright-browsers
       - key: RSSHUB_BASE_URL
         value: https://rsshub.app
       - key: TIBO_USERNAME
