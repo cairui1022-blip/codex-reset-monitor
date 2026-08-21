@@ -265,44 +265,35 @@ def index(request: Request):
 
 @app.get("/api/v1/debug/collector")
 def debug_collector(request: Request):
-    """诊断 Nitter RSS 连通性（需要 X-Admin-Secret header）"""
+    """诊断 Playwright 采集器连通性（需要 X-Admin-Secret header）"""
     secret = request.headers.get("X-Admin-Secret", "")
     if secret != settings.api_secret:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    import traceback
-    import requests as _requests
-    import feedparser
+    import time
+    from app.collector import fetch_recent_tweets
 
-    from app.collector import NITTER_INSTANCES, _HEADERS, _TIMEOUT
+    start = time.time()
+    tweets = []
+    error = None
+    try:
+        tweets = fetch_recent_tweets(max_results=5)
+    except Exception as e:
+        import traceback
+        error = traceback.format_exc()
 
-    username = settings.tibo_username
-    results = []
-
-    for host in NITTER_INSTANCES:
-        entry: dict = {"host": host, "status": None, "items": 0, "error": None, "sample": None}
-        try:
-            url = f"https://{host}/{username}/rss"
-            resp = _requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, allow_redirects=True)
-            entry["status"] = resp.status_code
-            if resp.status_code == 200:
-                if "<html" in resp.text.lower()[:200]:
-                    entry["error"] = "HTML response (Cloudflare block)"
-                else:
-                    feed = feedparser.parse(resp.text)
-                    entry["items"] = len(feed.entries)
-                    if feed.entries:
-                        entry["sample"] = feed.entries[0].get("title", "")[:100]
-        except Exception as e:
-            entry["error"] = str(e)[:200]
-        results.append(entry)
-
-    working = [r for r in results if r["items"] > 0]
+    elapsed = round(time.time() - start, 2)
+    samples = [
+        {"tweet_id": t.tweet_id, "created_at": t.created_at.isoformat(), "text": t.text[:120]}
+        for t in tweets[:3]
+    ]
     return {
-        "tibo_username": username,
-        "instances_tested": len(results),
-        "working_instances": len(working),
-        "results": results,
+        "method": "playwright_graphql_intercept",
+        "tibo_username": settings.tibo_username,
+        "elapsed_sec": elapsed,
+        "tweets_fetched": len(tweets),
+        "samples": samples,
+        "error": error,
     }
 
 
