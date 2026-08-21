@@ -57,9 +57,18 @@ def _playwright_worker(username: str, max_results: int) -> list[dict]:
     这个函数必须是模块级别（不能是 lambda / 嵌套函数），
     因为 ProcessPoolExecutor 需要 pickle 它。
     """
+    import os as _os
     import json as _json
     import threading
     from playwright.sync_api import sync_playwright
+
+    # 显式设置 Playwright browser 路径，确保子进程能找到 Chromium
+    # Render 部署时 browser 安装在 /opt/render/project/src/.playwright-browsers
+    _playwright_path = "/opt/render/project/src/.playwright-browsers"
+    _os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", _playwright_path)
+    # 也覆盖写入，防止被默认值覆盖
+    if not _os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _playwright_path
 
     collected: list[dict] = []
     hit_event = threading.Event()
